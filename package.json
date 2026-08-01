@@ -8,7 +8,8 @@
     "dev:server": "node --experimental-sqlite --no-warnings server/index.js",
     "dev:web": "vite",
     "build": "vite build",
-    "start": "npm run dev"
+    "start": "npm run dev",
+    "preflight": "node --experimental-sqlite --no-warnings scripts/preflight.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

@@ -73,6 +73,14 @@ npm run dev
 
 Then open **http://localhost:5173** and click **▶ LAUNCH SIMULATION**.
 
+**Before demoing to anyone**, run the preflight check — it exercises the real stack end-to-end (both front doors, real exploits, real patches, Supabase) and tells you pass/fail before judges do:
+
+```bash
+npm run preflight
+```
+
+See [DEMO.md](DEMO.md) for the actual talking-point script (3-minute stage version and a longer table-demo version), timing, and a Q&A cheat sheet mapped to the hackathon's judging criteria.
+
 Requires Node 20.6+ (uses built-in `node:sqlite`; tested on Node 24). No native compilation, no database to set up.
 
 ### Enable live LLM reasoning (optional but recommended for the demo)
@@ -153,6 +161,7 @@ The MCP server boots its own in-process copy of the vulnerable sandbox on first 
 - The exploits are the two classic, well-understood OWASP categories — used here to *demonstrate detection and remediation*, not to arm attackers.
 - Blue's autonomy is bounded: patches are confined to the sandbox's swappable modules and are only accepted after **automated re-verification**; anything that fails validation is flagged for human review.
 - Validation is **semantic, not just structural** — a candidate patch is loaded in an isolated temp file and exercised with the exact security-relevant cases (owner access, stranger denial, admin override, unauthenticated denial; injection payload vs. legitimate login) before it's ever written into the live sandbox. This was tightened after live testing surfaced a real LLM failure mode: a syntactically valid but semantically broken access check (`callerId === 'admin'`, which can never be true) that a shape-only check would have missed. It's now caught and rejected automatically, falling back to the vetted template.
+- The MCP server's sandbox is **fully isolated from the standalone web app's**, not just on a different port — it gets its own copy of the mutable vulnerable modules (`VULN_DIR_OVERRIDE`) on a private path. This was also a real bug caught during testing: without it, two orchestrator instances running close together in time (e.g. a preflight check exercising both front doors back to back) would race each other writing patches to the same physical files on disk.
 
 ## Roadmap
 

@@ -8,7 +8,10 @@ const path = require('path');
 const crypto = require('crypto');
 const { db } = require('./db');
 
-const VULN_DIR = path.join(__dirname, 'vuln');
+// Overridable so a second orchestrator instance (e.g. the MCP server) can
+// point at its own isolated copy of these files instead of racing the
+// standalone web app over the same ones on disk.
+const VULN_DIR = process.env.VULN_DIR_OVERRIDE || path.join(__dirname, 'vuln');
 
 // Re-require a security module fresh each call so live patches apply.
 function loadModule(file) {

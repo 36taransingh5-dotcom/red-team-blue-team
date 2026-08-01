@@ -10,7 +10,9 @@ const crypto = require('crypto');
 const { narrate, generatePatch } = require('./llm');
 const { db } = require('../sandbox/db');
 
-const VULN_DIR = path.join(__dirname, '..', 'sandbox', 'vuln');
+// Must resolve identically to sandbox/app.js's VULN_DIR — same override,
+// so Blue writes patches to exactly the files the live sandbox re-requires.
+const VULN_DIR = process.env.VULN_DIR_OVERRIDE || path.join(__dirname, '..', 'sandbox', 'vuln');
 const TPL_DIR = path.join(__dirname, '..', 'sandbox', 'templates');
 
 const MAP = {

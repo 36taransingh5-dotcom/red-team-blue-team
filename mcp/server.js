@@ -5,9 +5,12 @@
 // e.g. "activate red team". It reuses the exact same sandbox, agents,
 // orchestrator, and Supabase persistence as the standalone web app; this
 // is just a second front door onto the same real attack/patch/verify loop.
-require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const net = require('net');
+const fs = require('fs');
+const os = require('os');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 
@@ -15,11 +18,14 @@ const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio
 // don't depend on which port the sandbox ends up on.
 const supa = require('../server/supabase');
 
-// agents/red.js reads SANDBOX_URL once, at module load time. If the
-// standalone web app (npm run dev) is already holding :4000, we must pick
-// a different free port and set SANDBOX_URL *before* orchestrator/red are
-// ever required — otherwise Red would silently attack whatever else is
-// already running on :4000 instead of this MCP server's own sandbox.
+// agents/red.js reads SANDBOX_URL once, at module load time, and blue.js/
+// sandbox/app.js read VULN_DIR_OVERRIDE once too. If the standalone web
+// app (npm run dev) is already running, we must both (a) pick a different
+// free port and (b) give this instance its own isolated copy of the
+// mutable vuln/*.js files — otherwise this MCP server and the web app
+// would silently race each other writing patches to the exact same files
+// on disk, corrupting whichever one loses the race. Both must be set
+// *before* orchestrator/blue/red are ever required.
 let createSandbox, orchestrator, bus;
 let sandboxReady = false;
 
@@ -52,6 +58,16 @@ async function ensureSandbox() {
   if (sandboxReady) return;
   const port = await findFreePort(Number(process.env.SANDBOX_PORT || 4000));
   process.env.SANDBOX_URL = `http://localhost:${port}`;
+
+  // Fresh, isolated copy of the vulnerable modules for this process only —
+  // starts vulnerable, exactly like the standalone web app's own copy,
+  // but on a private path no other process ever touches.
+  const templatesDir = path.join(__dirname, '..', 'server', 'sandbox', 'templates');
+  const isolatedVulnDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rtbt-mcp-vuln-'));
+  fs.copyFileSync(path.join(templatesDir, 'loginQuery.vuln.js'), path.join(isolatedVulnDir, 'loginQuery.js'));
+  fs.copyFileSync(path.join(templatesDir, 'accountAccess.vuln.js'), path.join(isolatedVulnDir, 'accountAccess.js'));
+  process.env.VULN_DIR_OVERRIDE = isolatedVulnDir;
+
   ({ createSandbox } = require('../server/sandbox/app'));
   orchestrator = require('../server/orchestrator');
   bus = require('../server/eventBus');
