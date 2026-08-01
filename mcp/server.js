@@ -144,14 +144,104 @@ function buildReport(events) {
   return lines.join('\n');
 }
 
+// The standalone web app (npm run dev): control API on :3001, Mission
+// Control UI on :5173. When it's running, we drive the battle through it
+// so the live dashboard reflects the run in real time.
+const CONTROL_URL = process.env.CONTROL_URL || 'http://localhost:3001';
+const WEB_URL = process.env.WEB_URL || 'http://localhost:5173';
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function controlServerUp() {
+  try {
+    const r = await fetch(`${CONTROL_URL}/api/status`, { signal: AbortSignal.timeout(1200) });
+    const j = await r.json();
+    return j && j.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+// Best-effort: open a URL in the user's default browser so the live
+// dashboard is visible without them having to click anything. Never
+// throws — if it can't open, the run still completes and reports.
+function openInBrowser(url) {
+  try {
+    const { spawn } = require('child_process');
+    if (process.platform === 'darwin') spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+    else if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref();
+    else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Trigger a built-in run on the already-running control server and collect
+// its event stream, so any open Mission Control tab (including one in the
+// IDE's browser) shows the exact same battle live. Ordering mirrors the
+// preflight check: POST first — runSimulation() calls bus.reset()
+// synchronously before its first await, so the server's event log is clean
+// by the time this returns — then subscribe, where SSE replay catches the
+// earliest events and the live stream delivers the rest.
+async function collectControlRun() {
+  const startRes = await fetch(`${CONTROL_URL}/api/simulate/start`, { method: 'POST' });
+  const startBody = await startRes.json().catch(() => ({}));
+  if (!startBody.ok) return { error: startBody.error || 'the control server would not start a run' };
+
+  const events = [];
+  const streamRes = await fetch(`${CONTROL_URL}/api/stream`, { signal: AbortSignal.timeout(90000) });
+  const reader = streamRes.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let done = false;
+  const deadline = Date.now() + 90000;
+  while (!done && Date.now() < deadline) {
+    const { value, done: streamDone } = await reader.read();
+    if (streamDone) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const chunk = buf.slice(0, idx + 2);
+      buf = buf.slice(idx + 2);
+      const m = /^data: (.*)\n\n$/.exec(chunk);
+      if (!m) continue;
+      try {
+        const evt = JSON.parse(m[1]);
+        if (evt.type === 'run_start') events.length = 0; // discard any stale replayed run
+        events.push(evt);
+        if (evt.type === 'run_end') done = true;
+      } catch { /* ignore malformed */ }
+    }
+  }
+  reader.cancel().catch(() => {});
+  return { events };
+}
+
 async function runBattleTranscript({ targetDir, targetUrl } = {}) {
-  // Always run the same setup regardless of which mode is used this call —
-  // orchestrator.js pulls in agents/red.js at require time, which reads
-  // SANDBOX_URL once, so the *first* require anywhere in this process
-  // fixes it for good. Routing every call through ensureSandbox() first
-  // guarantees that happens exactly once, in the right order, no matter
-  // whether this particular call ends up using the built-in demo or an
-  // arbitrary target.
+  const generic = !!(targetDir && targetUrl);
+
+  // Preferred path for the built-in run: if the web app is up, open its
+  // dashboard and drive the battle through the control server so the live
+  // UI shows it in real time — same battle, two viewers (browser + this
+  // report). Only the built-in run is wired to the shared UI this way;
+  // arbitrary-target runs fall through to the in-process path below.
+  if (!generic && (await controlServerUp())) {
+    const opened = openInBrowser(WEB_URL);
+    await wait(1500); // give a freshly-opened tab a moment to connect its live stream
+    const { events, error } = await collectControlRun();
+    if (error) return `⚠️ ${error}`;
+    const report = buildReport(events);
+    return (
+      report +
+      `\n\n---\n🖥️ Live view ${opened ? 'opened' : 'available'} at ${WEB_URL} — the Mission Control dashboard ` +
+      `showed this battle in real time. Tip: keep a ${WEB_URL} tab open in your IDE's browser to watch future runs live, inline.`
+    );
+  }
+
+  // In-process path: arbitrary targets, or the built-in run when the web
+  // app isn't running. orchestrator.js pulls in agents/red.js at require
+  // time (which reads SANDBOX_URL once), so ensureSandbox() must run first
+  // to fix that in the right order — see its comment.
   await ensureSandbox();
   if (orchestrator.isRunning()) {
     return '⚠️ A battle is already in progress — wait for it to finish before starting another.';
@@ -167,11 +257,15 @@ async function runBattleTranscript({ targetDir, targetUrl } = {}) {
   };
   const unsubscribe = bus.subscribe(sink);
   try {
-    const result = targetDir && targetUrl
+    const result = generic
       ? await orchestrator.runGenericSimulation({ targetDir, targetUrl })
       : await orchestrator.runSimulation();
     if (!result.ok) return `⚠️ ${result.error}`;
-    return buildReport(events);
+    let report = buildReport(events);
+    if (!generic) {
+      report += `\n\n---\n🖥️ Tip: run \`npm run dev\` and keep ${WEB_URL} open to watch these runs live in the Mission Control dashboard.`;
+    }
+    return report;
   } finally {
     unsubscribe();
   }
@@ -193,8 +287,11 @@ server.registerTool(
       'primary use. Called with no arguments, it assesses a deliberately-vulnerable "Banking API" ' +
       'application that ships with the tool as a ready-to-run example target, for when there is no other ' +
       'app to point it at. Only ever attacks localhost / 127.0.0.1; any other host is refused. Finding ' +
-      'nothing exploitable is a legitimate outcome, not an error. When describing this to the user, call it ' +
-      'a security assessment or a Red Team / Blue Team run — it is a working security tool, not a demo.',
+      'nothing exploitable is a legitimate outcome, not an error. If the Mission Control web app is running, ' +
+      'the built-in run opens a live dashboard in the browser and streams there in real time; you may also ' +
+      'surface http://localhost:5173 in the IDE\'s browser/preview so the user can watch it inline. When ' +
+      'describing this to the user, call it a security assessment or a Red Team / Blue Team run — it is a ' +
+      'working security tool, not a demo.',
     inputSchema: {
       targetDir: z.string().optional().describe(
         'Absolute path to the local codebase to assess. Provide together with targetUrl. Omit both to use the bundled example application.',
