@@ -2,10 +2,10 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 
 // ---------- helpers ----------
 function scoreColor(v) {
-  if (v >= 85) return '#39e991';
-  if (v >= 65) return '#e9c93a';
-  if (v >= 45) return '#e98b3a';
-  return '#ff4d5e';
+  if (v >= 85) return '#1f8a4c';
+  if (v >= 65) return '#1f5de1';
+  if (v >= 45) return '#c47b00';
+  return '#ed1b34';
 }
 
 function ScoreRing({ value, delta }) {
@@ -28,10 +28,10 @@ function ScoreRing({ value, delta }) {
       </svg>
       <div className="ring-center">
         <div className="ring-num" style={{ color }}>{value}</div>
-        <div className="ring-label">SECURITY SCORE</div>
+        <div className="ring-label">Security Score</div>
         {delta !== 0 && (
-          <div className="ring-delta" style={{ color: delta > 0 ? '#39e991' : '#ff4d5e' }}>
-            {delta > 0 ? '▲ +' : '▼ '}{delta}
+          <div className="ring-delta" style={{ color: delta > 0 ? '#1f8a4c' : '#ed1b34' }}>
+            {delta > 0 ? '▲ +' : '▼ '}{Math.abs(delta)}
           </div>
         )}
       </div>
@@ -66,7 +66,7 @@ function FeedItem({ it, side }) {
     return (
       <div className={`ln ${cls}`}>
         <div className="attack-title">
-          {it.success ? '⛒ EXPLOIT' : '⛨ BLOCKED'} — {it.name}
+          {it.success ? 'Exploit landed' : 'Blocked'} — {it.name}
           <span className="badge">HTTP {it.status}</span>
         </div>
         <div className="attack-req">{it.request}</div>
@@ -85,15 +85,21 @@ function HistoryPanel({ runs, persisted }) {
   if (!persisted) {
     return (
       <div className="history empty">
-        <div className="history-head">BATTLE HISTORY <span className="diff-tag">Supabase not connected — history is per-session only</span></div>
+        <div className="history-head">
+          Battle History
+          <span className="diff-tag">Supabase not connected — history is per-session only</span>
+        </div>
       </div>
     );
   }
   return (
     <div className="history">
-      <div className="history-head">BATTLE HISTORY <span className="diff-tag">persisted in Supabase</span></div>
+      <div className="history-head">
+        Battle History
+        <span className="diff-tag">persisted in Supabase</span>
+      </div>
       <div className="history-rows">
-        {runs.length === 0 && <div className="idle" style={{ padding: '10px 14px' }}>// no completed runs yet</div>}
+        {runs.length === 0 && <div className="idle" style={{ padding: '12px 14px' }}>// no completed runs yet</div>}
         {runs.map((r) => (
           <div className="history-row" key={r.id}>
             <span className="history-score" style={{ color: scoreColor(r.final_score ?? r.initial_score) }}>
@@ -113,7 +119,7 @@ function DiffPanel({ patch }) {
   if (!patch) {
     return (
       <div className="diff empty">
-        <div className="diff-head">LIVE CODE REMEDIATION</div>
+        <div className="diff-head">Live Code Remediation</div>
         <div className="diff-idle">// Blue Team patches will appear here — real code, applied to the running sandbox.</div>
       </div>
     );
@@ -121,13 +127,13 @@ function DiffPanel({ patch }) {
   return (
     <div className="diff">
       <div className="diff-head">
-        LIVE CODE REMEDIATION
+        Live Code Remediation
         <span className="diff-file">{patch.file}</span>
         <span className="diff-tag">{patch.label} · {patch.source}</span>
       </div>
       <div className="diff-cols">
-        <pre className="code before"><span className="code-tag">BEFORE — vulnerable</span>{patch.before}</pre>
-        <pre className="code after"><span className="code-tag">AFTER — hardened</span>{patch.after}</pre>
+        <pre className="code before"><span className="code-tag">Before — vulnerable</span>{patch.before}</pre>
+        <pre className="code after"><span className="code-tag">After — hardened</span>{patch.after}</pre>
       </div>
     </div>
   );
@@ -178,7 +184,7 @@ export default function App() {
         break;
       case 'run_end':
         setRunning(false); setSummary(e); setSys((p) => [...p, { ...e, type: 'phase', text: e.summary }]);
-        setTimeout(refreshHistory, 400); // give the DB write a beat to land
+        setTimeout(refreshHistory, 400);
         break;
       case 'phase':
       case 'log':
@@ -217,53 +223,104 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-red">RED</span>
-          <span className="brand-vs">//</span>
-          <span className="brand-blue">TEAM</span>
-          <span className="brand-sub">Autonomous Cyber Range</span>
+          <div className="brand-mark">
+            <span className="brand-red">Red</span>
+            <span className="brand-slash">//</span>
+            <span className="brand-blue">Blue</span>
+          </div>
+          <div className="brand-sub">Autonomous Cyber Range</div>
         </div>
         <div className="chips">
-          <span className="chip">🎯 {meta.app}</span>
+          <span className="chip">{meta.app}</span>
           <span className={`chip ${meta.llm ? 'live' : ''}`}>
-            {meta.llm ? `🧠 ${meta.model}` : '🧠 fallback mode'}
+            {meta.llm ? meta.model : 'Fallback mode'}
           </span>
           <span className={`chip ${meta.persisted ? 'live' : ''}`}>
-            {meta.persisted ? '💾 Supabase' : '💾 in-memory only'}
+            {meta.persisted ? 'Supabase' : 'In-memory only'}
           </span>
           <button className="start-btn" onClick={start} disabled={running}>
-            {running ? '● RUNNING…' : '▶ LAUNCH SIMULATION'}
+            {running ? 'Running…' : 'Launch Simulation'}
           </button>
         </div>
       </header>
 
-      <div className="stage">
-        <Feed side="red" title="RED TEAM · OFFENSE" items={red} />
-
-        <div className="center">
-          <ScoreRing value={score} delta={delta} />
-          <div className="stat-row">
-            <div className="stat"><b>{openVulns}</b><span>open vulns</span></div>
-            <div className="stat"><b>{patchCount}</b><span>patches</span></div>
-          </div>
-          {summary && (
-            <div className={`verdict ${summary.patched?.length === 2 ? 'ok' : 'warn'}`}>
-              {summary.patched?.length === 2 ? '✔ HARDENED' : '⚠ RESIDUAL FINDINGS'}
-              <div className="verdict-sub">{summary.summary}</div>
-            </div>
-          )}
-          <div className="sysfeed">
-            {sys.length === 0 && <div className="idle center-idle">Orchestrator idle. Launch a simulation to begin the battle.</div>}
-            {sys.map((s) => (
-              <div key={s.seq ?? Math.random()} className={`sysln ${s.type === 'phase' ? 'sysphase' : ''}`}>{s.text}</div>
+      <section className="hero">
+        <div className="hero-copy">
+          <div className="hero-kicker">Cursor Cybersecurity Hackathon</div>
+          <h1>
+            Because security
+            <br />
+            isn&apos;t{' '}
+            <span className="text-red">black</span>
+            {' '}and{' '}
+            <span className="text-blue">white</span>
+          </h1>
+          <p className="hero-lede">
+            Watch autonomous Red and Blue Team agents attack, defend, and harden real code —
+            live in the sandbox. Not a dashboard. A battle you can verify.
+          </p>
+          <div className="letter-pile" aria-hidden="true">
+            {'RED'.split('').map((ch, i) => (
+              <span key={`r${i}`} className="pile-letter red" style={{ '--i': i }}>{ch}</span>
+            ))}
+            {'BLUE'.split('').map((ch, i) => (
+              <span key={`b${i}`} className="pile-letter blue" style={{ '--i': i + 3 }}>{ch}</span>
             ))}
           </div>
         </div>
+        <div className="hero-panels">
+          <div className="hero-panel red">
+            <h2>Red Team</h2>
+            <p>Offense that finds real exploits against a live target — SQLi, IDOR, and more.</p>
+          </div>
+          <div className="hero-panel blue">
+            <h2>Blue Team</h2>
+            <p>Defense that rewrites vulnerable modules and proves the fix with a retest.</p>
+          </div>
+        </div>
+      </section>
 
-        <Feed side="blue" title="BLUE TEAM · DEFENSE" items={blue} />
+      <div className="stage-wrap">
+        <div className="stage">
+          <Feed side="red" title="Red Team · Offense" items={red} />
+
+          <div className="center">
+            <ScoreRing value={score} delta={delta} />
+            <div className="stat-row">
+              <div className="stat"><b>{openVulns}</b><span>open vulns</span></div>
+              <div className="stat"><b>{patchCount}</b><span>patches</span></div>
+            </div>
+            {summary && (
+              <div className={`verdict ${summary.patched?.length === 2 ? 'ok' : 'warn'}`}>
+                {summary.patched?.length === 2 ? 'Hardened' : 'Residual findings'}
+                <div className="verdict-sub">{summary.summary}</div>
+              </div>
+            )}
+            <div className="sysfeed">
+              {sys.length === 0 && (
+                <div className="idle center-idle">
+                  Orchestrator idle. Launch a simulation to begin the battle.
+                </div>
+              )}
+              {sys.map((s) => (
+                <div key={s.seq ?? Math.random()} className={`sysln ${s.type === 'phase' ? 'sysphase' : ''}`}>
+                  {s.text}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <Feed side="blue" title="Blue Team · Defense" items={blue} />
+        </div>
+
+        <DiffPanel patch={patch} />
+        <HistoryPanel runs={history} persisted={meta.persisted} />
       </div>
 
-      <DiffPanel patch={patch} />
-      <HistoryPanel runs={history} persisted={meta.persisted} />
+      <footer className="footer-note">
+        <span><strong>Red // Blue</strong> · observe → reason → act → measure → improve</span>
+        <span>Design language inspired by redblue.co.uk</span>
+      </footer>
     </div>
   );
 }
