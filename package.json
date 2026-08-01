@@ -9,7 +9,8 @@
     "dev:web": "vite",
     "build": "vite build",
     "start": "npm run dev",
-    "preflight": "node --experimental-sqlite --no-warnings scripts/preflight.js"
+    "preflight": "node --experimental-sqlite --no-warnings scripts/preflight.js",
+    "clear-history": "node scripts/clear-history.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

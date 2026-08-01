@@ -14,6 +14,17 @@ If it prints `✔ 15/15 checks passed — you're demo ready`, you're good. If an
 
 ---
 
+## Resetting to a clean slate (before the demo, and between takes)
+
+- **Wipe Battle History** so the panel only shows the run(s) you do live (otherwise it's a wall of old `96`s from rehearsal):
+  ```bash
+  npm run clear-history
+  ```
+- **Fully fresh feeds**: the dashboard replays the last completed run to any newly-opened tab, so a fresh page load can show a leftover battle. It clears the instant you start the next run — but if you want it pristine before hitting go, just restart `npm run dev`.
+- **Reset the `mini-notes-api` fixture** if a take patched it: `git checkout test-fixtures/mini-notes-api/server.js && rm -rf test-fixtures/mini-notes-api/.redteam-backups`. (The built-in Banking target resets itself automatically every run.)
+
+---
+
 ## Rehearsing solo
 
 1. `npm run dev`, open `http://localhost:5173`.
