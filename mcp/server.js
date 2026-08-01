@@ -13,6 +13,7 @@ const fs = require('fs');
 const os = require('os');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
+const { z } = require('zod');
 
 // Safe to require eagerly — server/supabase.js only reads env vars that
 // don't depend on which port the sandbox ends up on.
@@ -87,9 +88,15 @@ async function ensureSandbox() {
 function buildReport(events) {
   const runStart = events.find((e) => e.type === 'run_start');
   const runEnd = events.find((e) => e.type === 'run_end');
+  const generic = !!runStart?.generic;
   const scores = events.filter((e) => e.type === 'score');
   const initialScore = scores[0]?.value;
   const finalScore = scores[scores.length - 1]?.value;
+  const lowScore = scores.length ? Math.min(...scores.map((s) => s.value)) : initialScore;
+  // A run that finds and fully fixes something nets back to its starting
+  // score — showing only "start -> end" would make that look like nothing
+  // happened. Show the dip when there was one.
+  const scoreLine = lowScore < initialScore ? `${initialScore} → ${lowScore} → ${finalScore}` : `${initialScore} → ${finalScore}`;
 
   const byVuln = new Map();
   for (const e of events) {
@@ -102,8 +109,10 @@ function buildReport(events) {
 
   const lines = [`🎯 **${runStart?.app || 'Target'}** — security battle report`, ''];
   let n = 1;
+  let exploitedCount = 0;
   for (const { exploit, retest, patch } of byVuln.values()) {
     if (!exploit) continue;
+    exploitedCount += 1;
     lines.push(`**${n}. ${exploit.name}**`);
     lines.push(`   🔴 Red — ${exploit.evidence} (\`HTTP ${exploit.status}\`)`);
     if (patch) lines.push(`   🔵 Blue — rewrote \`${patch.file}\` (${patch.label}${patch.source === 'llm' ? '' : `, ${patch.source}`})`);
@@ -112,19 +121,37 @@ function buildReport(events) {
     n += 1;
   }
 
-  const hardened = runEnd?.patched?.length === 2;
-  lines.push(`**Score: ${initialScore} → ${finalScore}/100** — ${hardened ? '✅ HARDENED' : '⚠️ residual findings'}`);
+  if (exploitedCount === 0) {
+    // Only the generic (arbitrary-codebase) path can legitimately find
+    // nothing — the built-in demo always has its two known vulnerabilities.
+    lines.push(runEnd?.summary || 'No exploitable vulnerability found in this pass.');
+    lines.push('');
+    lines.push('_This does not prove the code is secure — only that this attempt did not find an issue. Try again, or point it at a different file/route._');
+    return lines.join('\n');
+  }
+
+  const patchedCount = runEnd?.patched?.length || 0;
+  const hardened = patchedCount > 0 && patchedCount === exploitedCount;
+  lines.push(`**Score: ${scoreLine}/100** — ${hardened ? '✅ HARDENED' : '⚠️ ' + (runEnd?.summary || 'residual findings')}`);
   lines.push('');
   lines.push(
-    'Every fix above was verified by re-running the exact same attack, not just claimed — ' +
-    'if a patch had failed retest, it would have automatically fallen back to a vetted ' +
-    'template instead. Want the actual before/after code for either fix? The patched files ' +
-    'are sitting on disk under `server/sandbox/vuln/` — just open one.',
+    generic
+      ? (hardened
+          ? 'Verified by re-running the exact same request against the real running server — not just self-reported. Note: unlike the built-in demo, there\'s no hand-written "known correct" check for arbitrary code, so this only proves the specific attack is blocked, not that the fix is complete. Review it before trusting it in anything real. A backup of the original file was made before it was touched.'
+          : 'The generated patch did not survive re-attack, so it was reverted — the original file is untouched (a backup was made either way). If your server doesn\'t auto-reload on file changes, restart it and try again; this can look identical to a bad patch.')
+      : 'Every fix above was verified by re-running the exact same attack, not just claimed — if a patch had failed retest, it would have automatically fallen back to a vetted template instead. Want the actual before/after code for either fix? The patched files are sitting on disk under `server/sandbox/vuln/` — just open one.',
   );
   return lines.join('\n');
 }
 
-async function runBattleTranscript() {
+async function runBattleTranscript({ targetDir, targetUrl } = {}) {
+  // Always run the same setup regardless of which mode is used this call —
+  // orchestrator.js pulls in agents/red.js at require time, which reads
+  // SANDBOX_URL once, so the *first* require anywhere in this process
+  // fixes it for good. Routing every call through ensureSandbox() first
+  // guarantees that happens exactly once, in the right order, no matter
+  // whether this particular call ends up using the built-in demo or an
+  // arbitrary target.
   await ensureSandbox();
   if (orchestrator.isRunning()) {
     return '⚠️ A battle is already in progress — wait for it to finish before starting another.';
@@ -140,7 +167,9 @@ async function runBattleTranscript() {
   };
   const unsubscribe = bus.subscribe(sink);
   try {
-    const result = await orchestrator.runSimulation();
+    const result = targetDir && targetUrl
+      ? await orchestrator.runGenericSimulation({ targetDir, targetUrl })
+      : await orchestrator.runSimulation();
     if (!result.ok) return `⚠️ ${result.error}`;
     return buildReport(events);
   } finally {
@@ -155,17 +184,29 @@ server.registerTool(
   {
     title: 'Activate Red Team // Blue Team',
     description:
-      'Launches an autonomous cybersecurity battle: a Red Team AI agent performs real HTTP exploits ' +
-      '(SQL injection auth bypass, IDOR / broken access control) against a local, deliberately vulnerable ' +
-      'Banking API sandbox; a Blue Team AI agent detects each attack, rewrites the actual vulnerable source ' +
-      'code, hot-reloads it live, and every patch is validated by re-running the exploit. Returns a full ' +
-      'play-by-play transcript with before/after code diffs and the final security score (0-100). Use this ' +
-      'whenever the user asks to "activate red team", run a security battle/test/simulation, or see the app ' +
-      'attack and defend itself.',
-    inputSchema: {},
+      'Launches an autonomous cybersecurity battle. With no arguments, runs against a local, deliberately ' +
+      'vulnerable built-in "Banking API" demo (SQL injection + IDOR) — a safe, reliable target for a quick ' +
+      'demo. With targetDir + targetUrl, instead points Red at a REAL local codebase: it reads the source, ' +
+      'proposes real vulnerabilities (broken access control, path traversal, SQL injection, etc.), sends ' +
+      'real HTTP requests to prove them, and if one lands, Blue patches the actual file and Red re-attacks ' +
+      'to verify — reverting the change if the fix does not hold. Only ever attacks localhost/127.0.0.1; ' +
+      'refuses any other host. May legitimately find nothing — that is a real, valid outcome, not a bug. ' +
+      'Use with no arguments for a quick demo of the mechanism; use with targetDir+targetUrl when the user ' +
+      'wants it tested against their own running project.',
+    inputSchema: {
+      targetDir: z.string().optional().describe(
+        'Absolute path to a local codebase to test instead of the built-in demo. Must be used together with targetUrl.',
+      ),
+      targetUrl: z.string().optional().describe(
+        'Base URL of that codebase\'s already-running local server (e.g. http://localhost:3000). Must be localhost or 127.0.0.1 — any other host is refused. Must be used together with targetDir.',
+      ),
+    },
   },
-  async () => {
-    const transcript = await runBattleTranscript();
+  async ({ targetDir, targetUrl }) => {
+    if ((targetDir && !targetUrl) || (targetUrl && !targetDir)) {
+      return { content: [{ type: 'text', text: '⚠️ Provide both targetDir and targetUrl together, or neither (to use the built-in demo).' }] };
+    }
+    const transcript = await runBattleTranscript({ targetDir, targetUrl });
     return { content: [{ type: 'text', text: transcript }] };
   },
 );

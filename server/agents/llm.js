@@ -76,4 +76,75 @@ async function generatePatch({ vulnType, vulnerableCode, guidance }) {
   }
 }
 
-module.exports = { narrate, generatePatch, enabled: !!client, model };
+// Generic-target mode has no hand-written fallback — there's no way to
+// deterministically "find a vulnerability" in code we've never seen. If
+// there's no client, callers must handle a null return as "can't run in
+// this mode without a real LLM," not silently degrade like the fixed demo.
+async function askJSON({ system, user, maxTokens = 700, temperature = 0.2 }) {
+  if (!client) return null;
+  try {
+    const resp = await client.chat.completions.create({
+      model,
+      max_tokens: maxTokens,
+      temperature,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+    });
+    let text = resp.choices?.[0]?.message?.content?.trim() || '';
+    text = text.replace(/^```[a-z]*\n?/i, '').replace(/```$/, '').trim();
+    try {
+      return JSON.parse(text);
+    } catch {
+      const match = text.match(/\{[\s\S]*\}/);
+      if (match) { try { return JSON.parse(match[0]); } catch { /* fall through */ } }
+      console.warn('[llm] askJSON: model did not return valid JSON:', text.slice(0, 200));
+      return null;
+    }
+  } catch (err) {
+    console.warn('[llm] askJSON failed:', err.message);
+    return null;
+  }
+}
+
+// Same idea as generatePatch, but for an arbitrary file/vulnerability the
+// model is seeing for the first time — no vetted template to fall back to,
+// so the caller must validate (syntax check + re-attack) before trusting it.
+async function generateGenericPatch({ before, name, description, requestUsed }) {
+  if (!client) return null;
+  try {
+    const resp = await client.chat.completions.create({
+      model,
+      max_tokens: 900,
+      temperature: 0.2,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are a defensive security engineer. Return ONLY the full corrected ' +
+            'source file, as valid code, with no markdown fences and no prose. ' +
+            'Preserve all existing exports, routes, and behavior that are not part ' +
+            'of the vulnerability being fixed.',
+        },
+        {
+          role: 'user',
+          content:
+            `Vulnerability: ${name}\n` +
+            `Description: ${description}\n` +
+            `The exploit that proved this works: ${JSON.stringify(requestUsed)}\n\n` +
+            `Rewrite this file to fix the vulnerability while changing as little else as possible:\n\n` +
+            before,
+        },
+      ],
+    });
+    let code = resp.choices?.[0]?.message?.content?.trim() || '';
+    code = code.replace(/^```[a-z]*\n?/i, '').replace(/```$/, '').trim();
+    return code || null;
+  } catch (err) {
+    console.warn('[llm] generateGenericPatch failed:', err.message);
+    return null;
+  }
+}
+
+module.exports = { narrate, generatePatch, askJSON, generateGenericPatch, enabled: !!client, model };

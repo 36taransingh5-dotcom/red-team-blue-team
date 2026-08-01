@@ -142,6 +142,29 @@ The MCP server boots its own in-process copy of the vulnerable sandbox on first 
 
 ---
 
+## Testing a real, arbitrary codebase (not just the built-in demo)
+
+Everything above targets one fixed, known-vulnerable sandbox — reliable for a demo, but it's not scanning "a codebase," it's exploiting two bugs written in advance. `activate_red_team` also accepts `targetDir` + `targetUrl`, which points Red at a **real, arbitrary local Node/Express app it has never seen**: it reads the source, proposes concrete vulnerabilities via the LLM, sends real HTTP requests to try to prove them, and — if one lands — Blue patches the actual file and Red re-attacks to verify, exactly like the built-in demo.
+
+```
+activate red team on /path/to/some/project at http://localhost:3000
+```
+
+(Your coding agent maps that phrasing to `targetDir`/`targetUrl` automatically — the tool's description tells it how.)
+
+A ready-made second target ships in [`test-fixtures/mini-notes-api`](test-fixtures/mini-notes-api) — a different domain with three different vulnerability classes (SQL injection, broken access control, path traversal — the last two aren't in the built-in demo at all). Verified live: a single run found and independently fixed all three of SQL injection, broken access control, and a related missing-authentication issue in one pass, having first tried and correctly ruled out five other guesses along the way. See its README for how to run it with hot-reload.
+
+**Be clear-eyed about what's different here versus the built-in demo:**
+
+- **Only localhost/127.0.0.1** — hard-enforced in code (`assertLocalhost` in `agents/genericRed.js`), not a suggestion. This never attacks a remote target.
+- **It can legitimately find nothing.** Not every codebase has an exploitable bug, and this is one AI's best attempt in one pass — a clean result doesn't mean the app is secure, only that this attempt didn't find an issue.
+- **Verification is weaker than the built-in demo's.** The Banking Demo's patches are checked against four hand-written, known-correct scenarios (owner/stranger/admin/anonymous) before they're ever trusted. There's no way to write that generically for code we've never seen — so here, the only pre-write check is "does it parse" (`node --check`), and the *real* proof is re-running the same exploit. That's a necessary check, not a sufficient one: during testing, one generated patch happened to block the specific attack by accident (it hardcoded a fake logged-in user) without implementing real authentication at all. Review AI-generated patches before trusting them in anything real.
+- **The target must hot-reload on file changes** (nodemon, `node --watch`, etc.) for the live re-verification to mean anything. Without it, a *correct* patch and a *bad* one look identical on retest — the process serving requests never picked up the change either way.
+- **Real files get modified.** A backup is always written first (`.redteam-backups/` next to the target, gitignored), and if the retest fails, the file is reverted rather than left in an unverified state — but this is genuinely mutating your project, not a disposable sandbox copy.
+- **Finds and fixes multiple distinct vulnerabilities per run** (deduped so a few depth-guesses for the same bug don't count as separate findings), working through them one at a time — but it's still one recon pass over a heuristically-shortlisted set of files, not an exhaustive sweep. It can, and sometimes does, miss something real.
+
+---
+
 ## 90-second demo script
 
 1. **Open the command center.** "This is a live, deliberately vulnerable banking API. Two autonomous AI agents are about to fight over it."
@@ -165,5 +188,6 @@ The MCP server boots its own in-process copy of the vulnerable sandbox on first 
 
 ## Roadmap
 
-- ~~**Phase 2:** Cursor / Claude Code / Codex integration~~ — **done**, via the [MCP server](#run-it-inside-your-coding-agent-mcp). Next step for this phase: point Red at the *actual* project open in the IDE instead of the bundled demo sandbox, so it tests real code as you write it.
+- ~~**Phase 2:** Cursor / Claude Code / Codex integration~~ — **done**, via the [MCP server](#run-it-inside-your-coding-agent-mcp).
+- ~~**Phase 2.5:** point Red at the actual project open in the IDE, not just the bundled demo~~ — **done**, via [`targetDir`/`targetUrl`](#testing-a-real-arbitrary-codebase-not-just-the-built-in-demo), including finding and fixing multiple distinct vulnerability types in one run. Next step for this phase: widen the LLM's recon beyond a heuristic file pre-filter, so it isn't limited to files that happen to match suspicious regex patterns.
 - **Phase 3:** GitHub integration — every PR triggers an autonomous Red review + Blue validation before merge.

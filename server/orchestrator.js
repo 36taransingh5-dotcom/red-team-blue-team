@@ -7,6 +7,10 @@ const red = require('./agents/red');
 const blue = require('./agents/blue');
 const llm = require('./agents/llm');
 const supa = require('./supabase');
+const genericRed = require('./agents/genericRed');
+const genericBlue = require('./agents/genericBlue');
+
+const SEVERITY_POINTS = { critical: 40, high: 25, medium: 15, low: 8 };
 
 const BEAT = Number(process.env.BEAT_MS || 650);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -138,4 +142,129 @@ async function runSimulation() {
   }
 }
 
-module.exports = { runSimulation, isRunning: () => running };
+// Patch + verify one already-confirmed finding. Returns the vulnerability
+// name if it was successfully remediated, or null otherwise (patch
+// couldn't be safely applied, or didn't survive re-attack and was
+// reverted) — either way the original file is never left in a worse or
+// unverified state than before.
+async function battleGenericFinding({ targetDir, finding }) {
+  const findingId = `${finding.file}::${finding.name}`.replace(/[^a-zA-Z0-9]/g, '_');
+  record({
+    type: 'attack', phase: 'exploit', vulnType: findingId, name: finding.name,
+    success: true, status: finding.status, request: finding.requestSummary, evidence: finding.evidence,
+  });
+
+  const severity = SEVERITY_POINTS[finding.severity] || SEVERITY_POINTS.medium;
+  emitScore(-severity, `${finding.name} found in ${finding.file} (${finding.severity})`);
+  await log('red', `Exploit landed: ${finding.name} in ${finding.file}. ${finding.evidence}`, 'bad');
+
+  await phase('blue', `Threat detected: ${finding.name}`);
+  const patchResult = await genericBlue.patchFinding({
+    targetDir, file: finding.file, name: finding.name,
+    description: finding.description, requestSummary: finding.requestSummary,
+  });
+
+  if (!patchResult.applied) {
+    await log('blue', `Could not safely apply a fix: ${patchResult.reason}. Original file left untouched (backup at ${patchResult.backupPath}).`, 'warn');
+    return null;
+  }
+
+  record({
+    type: 'patch', vulnType: findingId, file: finding.file,
+    before: patchResult.before, after: patchResult.after, source: 'llm', label: finding.name,
+  });
+  await log('blue', `Patch written to ${finding.file}. Verifying by re-running the same exploit…`);
+  await sleep(BEAT);
+
+  const retestResult = await genericRed.retest(finding);
+  record({
+    type: 'attack', phase: 'retest', vulnType: findingId, name: finding.name,
+    success: retestResult.success, status: retestResult.status, request: retestResult.requestSummary, evidence: retestResult.evidence,
+  });
+
+  if (!retestResult.success) {
+    emitScore(severity, `${finding.name} patched & verified`);
+    await log('blue', `${finding.name} remediated and verified by re-attack.`, 'good');
+    return finding.name;
+  }
+
+  genericBlue.revert(targetDir, finding.file, patchResult.backupPath);
+  await log(
+    'blue',
+    `Patch did not survive re-attack — reverted ${finding.file} to its original state. ` +
+      `(If your server doesn't hot-reload file changes, restart it and try again — this may be a false negative, not a bad patch.)`,
+    'warn',
+  );
+  return null;
+}
+
+// Same battle loop shape as runSimulation, but against a real, arbitrary
+// local codebase instead of the built-in Banking Demo — Red has to find
+// vulnerabilities first (not guaranteed to find any at all), there's no
+// vetted secure template to fall back to if a patch doesn't hold, and
+// unlike the fixed demo (which always has exactly its two known bugs),
+// a run here can surface anywhere from zero to several different findings.
+async function runGenericSimulation({ targetDir, targetUrl }) {
+  if (running) return { ok: false, error: 'simulation already running' };
+  running = true;
+  try {
+    bus.reset();
+    score = 100;
+    runId = await supa.startRun({ model: llm.model, initialScore: score });
+    record({
+      type: 'run_start', llm: llm.enabled, model: llm.model,
+      app: `${targetDir} (${targetUrl})`, persisted: supa.enabled, generic: true,
+    });
+    record({ type: 'score', value: score, delta: 0, reason: 'baseline — scanning for vulnerabilities' });
+    await sleep(BEAT);
+
+    await phase('red', 'Reconnaissance started');
+    await log('red', `Scanning ${targetDir} for attack surface against ${targetUrl}...`);
+
+    let findings, attempts;
+    try {
+      ({ findings, attempts } = await genericRed.reconAndExploitAll({ targetDir, targetUrl }));
+    } catch (err) {
+      record({ type: 'run_end', score, patched: [], generic: true, summary: `Aborted: ${err.message}` });
+      return { ok: false, error: err.message };
+    }
+
+    const successfulKeys = new Set(findings.map((f) => `${f.file}::${f.name}`));
+    for (const a of attempts) {
+      if (successfulKeys.has(`${a.file}::${a.name}`)) continue; // gets its own full 'attack' event below
+      await log('red', `Tried ${a.name} (${a.requestSummary}) — no luck: ${a.evidence}`);
+    }
+    if (attempts.length === 0) await log('red', 'No plausible vulnerability candidates found in the code shown.');
+
+    if (findings.length === 0) {
+      record({
+        type: 'run_end', score, patched: [], generic: true,
+        summary: `No exploitable vulnerability found${attempts.length ? ` (tried ${attempts.length})` : ''}. This does not prove the app is secure — only that this attempt did not find one.`,
+      });
+      await supa.endRun(runId, { finalScore: score, patched: [] });
+      return { ok: true, score };
+    }
+
+    await log('red', `${findings.length} distinct vulnerabilit${findings.length === 1 ? 'y' : 'ies'} confirmed exploitable: ${findings.map((f) => f.name).join(', ')}. Working through them one at a time.`);
+
+    const patched = [];
+    for (const finding of findings) {
+      const remediatedName = await battleGenericFinding({ targetDir, finding });
+      if (remediatedName) patched.push(remediatedName);
+    }
+
+    record({
+      type: 'run_end', score, patched, generic: true,
+      summary: patched.length === findings.length
+        ? `All ${findings.length} found vulnerabilit${findings.length === 1 ? 'y' : 'ies'} remediated and verified.`
+        : `${patched.length}/${findings.length} found vulnerabilities remediated — the rest are flagged for human review.`,
+    });
+    await supa.endRun(runId, { finalScore: score, patched });
+    return { ok: true, score };
+  } finally {
+    running = false;
+    runId = null;
+  }
+}
+
+module.exports = { runSimulation, runGenericSimulation, isRunning: () => running };
