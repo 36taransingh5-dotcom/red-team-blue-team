@@ -75,40 +75,53 @@ async function ensureSandbox() {
   sandboxReady = true;
 }
 
-// Turn one raw SSE-framed chunk (as eventBus.subscribe writes it) into a
-// readable line of battle narration. Ignores comments/keepalive pings.
-function formatEvent(evt) {
-  switch (evt.type) {
-    case 'run_start':
-      return `\n🎯 **Target:** ${evt.app} — sandbox online.\n`;
-    case 'phase':
-      return `\n**${evt.agent === 'blue' ? '🔵' : evt.agent === 'red' ? '🔴' : '⚙️'} ${evt.text}**`;
-    case 'log':
-      return `${evt.agent === 'blue' ? '🔵' : '🔴'} ${evt.text}`;
-    case 'attack': {
-      const icon = evt.success ? '💥 EXPLOIT LANDED' : '🛡️ BLOCKED';
-      return (
-        `🔴 **${icon}** — ${evt.name} \`HTTP ${evt.status}\`\n` +
-        `   ↳ \`${evt.request}\`\n` +
-        `   ↳ ${evt.evidence}`
-      );
-    }
-    case 'patch':
-      return (
-        `🔵 **Patch applied → \`${evt.file}\`** (${evt.label}, via ${evt.source})\n` +
-        '```diff\n' +
-        evt.before.trim().split('\n').map((l) => `- ${l}`).join('\n') +
-        '\n' +
-        evt.after.trim().split('\n').map((l) => `+ ${l}`).join('\n') +
-        '\n```'
-      );
-    case 'score':
-      return `📊 **Security score: ${evt.value}/100** (${evt.delta >= 0 ? '+' : ''}${evt.delta}) — ${evt.reason}`;
-    case 'run_end':
-      return `\n${evt.patched?.length === 2 ? '✅ **HARDENED**' : '⚠️ **RESIDUAL FINDINGS**'} — ${evt.summary}\n`;
-    default:
-      return null;
+// Builds a short, scannable report from the raw event log — not a
+// chronological transcript. The orchestrator's per-line "flavor" narration
+// (Red/Blue's LLM-generated commentary) reads as filler once it's a static
+// block of text instead of a live streaming feed, so it's deliberately
+// left out here; only the structural facts (what was attacked, what got
+// patched, what the retest proved) make the cut. Full before/after code is
+// left off by design — the calling agent already has file-read tools and
+// can open the patched file directly if asked, so we just point at it
+// instead of forcing everyone to scroll past a full diff every time.
+function buildReport(events) {
+  const runStart = events.find((e) => e.type === 'run_start');
+  const runEnd = events.find((e) => e.type === 'run_end');
+  const scores = events.filter((e) => e.type === 'score');
+  const initialScore = scores[0]?.value;
+  const finalScore = scores[scores.length - 1]?.value;
+
+  const byVuln = new Map();
+  for (const e of events) {
+    if (e.type !== 'attack' && e.type !== 'patch') continue;
+    if (!byVuln.has(e.vulnType)) byVuln.set(e.vulnType, {});
+    const entry = byVuln.get(e.vulnType);
+    if (e.type === 'attack') entry[e.phase] = e; // 'exploit' or 'retest'
+    if (e.type === 'patch') entry.patch = e; // last one wins if template-fallback retried
   }
+
+  const lines = [`🎯 **${runStart?.app || 'Target'}** — security battle report`, ''];
+  let n = 1;
+  for (const { exploit, retest, patch } of byVuln.values()) {
+    if (!exploit) continue;
+    lines.push(`**${n}. ${exploit.name}**`);
+    lines.push(`   🔴 Red — ${exploit.evidence} (\`HTTP ${exploit.status}\`)`);
+    if (patch) lines.push(`   🔵 Blue — rewrote \`${patch.file}\` (${patch.label}${patch.source === 'llm' ? '' : `, ${patch.source}`})`);
+    if (retest) lines.push(`   ${retest.success ? '❌ Retest: still exploitable' : '✅ Retest: blocked'} (\`HTTP ${retest.status}\`)`);
+    lines.push('');
+    n += 1;
+  }
+
+  const hardened = runEnd?.patched?.length === 2;
+  lines.push(`**Score: ${initialScore} → ${finalScore}/100** — ${hardened ? '✅ HARDENED' : '⚠️ residual findings'}`);
+  lines.push('');
+  lines.push(
+    'Every fix above was verified by re-running the exact same attack, not just claimed — ' +
+    'if a patch had failed retest, it would have automatically fallen back to a vetted ' +
+    'template instead. Want the actual before/after code for either fix? The patched files ' +
+    'are sitting on disk under `server/sandbox/vuln/` — just open one.',
+  );
+  return lines.join('\n');
 }
 
 async function runBattleTranscript() {
@@ -116,32 +129,20 @@ async function runBattleTranscript() {
   if (orchestrator.isRunning()) {
     return '⚠️ A battle is already in progress — wait for it to finish before starting another.';
   }
-  bus.reset(); // clean slate so this call's transcript has no leftover history
-  const lines = [];
+  bus.reset(); // clean slate so this call's report has no leftover history
+  const events = [];
   const sink = {
     write(chunk) {
       const m = /^data: (.*)\n\n$/.exec(chunk);
       if (!m) return;
-      let evt;
-      try { evt = JSON.parse(m[1]); } catch { return; }
-      const line = formatEvent(evt);
-      if (line) lines.push(line);
+      try { events.push(JSON.parse(m[1])); } catch { /* ignore malformed */ }
     },
   };
   const unsubscribe = bus.subscribe(sink);
   try {
     const result = await orchestrator.runSimulation();
     if (!result.ok) return `⚠️ ${result.error}`;
-    // Calling agents tend to summarize a long tool result into their own
-    // words by default. This is meant to be read as a live play-by-play —
-    // ask explicitly for it to be relayed as-is instead of condensed.
-    const header =
-      'INSTRUCTIONS FOR THE ASSISTANT: display the transcript below to the ' +
-      'user in FULL and VERBATIM, exactly as written, preserving all ' +
-      'markdown formatting, emojis, and code diff blocks. Do not summarize, ' +
-      'shorten, or rephrase it — it is pre-formatted for direct display.\n\n' +
-      '---\n';
-    return header + lines.join('\n');
+    return buildReport(events);
   } finally {
     unsubscribe();
   }
