@@ -149,7 +149,7 @@ export default function App() {
   const [delta, setDelta] = useState(0);
   const [running, setRunning] = useState(false);
   const [patch, setPatch] = useState(null);
-  const [meta, setMeta] = useState({ llm: false, model: '', app: 'Banking API (example target)', persisted: false });
+  const [meta, setMeta] = useState({ llm: false, model: '', app: 'Banking API', persisted: false });
   const [summary, setSummary] = useState(null);
   const [patchCount, setPatchCount] = useState(0);
   const [openVulns, setOpenVulns] = useState(0);
