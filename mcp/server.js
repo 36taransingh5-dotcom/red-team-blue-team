@@ -137,7 +137,7 @@ function buildReport(events) {
   lines.push(
     generic
       ? (hardened
-          ? 'Verified by re-running the exact same request against the real running server — not just self-reported. Note: unlike the built-in demo, there\'s no hand-written "known correct" check for arbitrary code, so this only proves the specific attack is blocked, not that the fix is complete. Review it before trusting it in anything real. A backup of the original file was made before it was touched.'
+          ? 'Verified by re-running the exact same request against the real running server — not just self-reported. Note: unlike the bundled example application, there\'s no hand-written "known correct" check for arbitrary code, so this only proves the specific attack is blocked, not that the fix is complete. Review it before trusting it in anything real. A backup of the original file was made before it was touched.'
           : 'The generated patch did not survive re-attack, so it was reverted — the original file is untouched (a backup was made either way). If your server doesn\'t auto-reload on file changes, restart it and try again; this can look identical to a bad patch.')
       : 'Every fix above was verified by re-running the exact same attack, not just claimed — if a patch had failed retest, it would have automatically fallen back to a vetted template instead. Want the actual before/after code for either fix? The patched files are sitting on disk under `server/sandbox/vuln/` — just open one.',
   );
@@ -182,29 +182,31 @@ const server = new McpServer({ name: 'red-team-blue-team', version: '1.0.0' });
 server.registerTool(
   'activate_red_team',
   {
-    title: 'Activate Red Team // Blue Team',
+    title: 'Red Team // Blue Team — autonomous security assessment',
     description:
-      'Launches an autonomous cybersecurity battle. With no arguments, runs against a local, deliberately ' +
-      'vulnerable built-in "Banking API" demo (SQL injection + IDOR) — a safe, reliable target for a quick ' +
-      'demo. With targetDir + targetUrl, instead points Red at a REAL local codebase: it reads the source, ' +
-      'proposes real vulnerabilities (broken access control, path traversal, SQL injection, etc.), sends ' +
-      'real HTTP requests to prove them, and if one lands, Blue patches the actual file and Red re-attacks ' +
-      'to verify — reverting the change if the fix does not hold. Only ever attacks localhost/127.0.0.1; ' +
-      'refuses any other host. May legitimately find nothing — that is a real, valid outcome, not a bug. ' +
-      'Use with no arguments for a quick demo of the mechanism; use with targetDir+targetUrl when the user ' +
-      'wants it tested against their own running project.',
+      'Runs an autonomous security assessment on a local web application. A Red Team agent reads the ' +
+      'source, then finds and exploits real vulnerabilities over HTTP (SQL injection, broken access ' +
+      'control / IDOR, path traversal, missing authorization, etc.); a Blue Team agent patches the actual ' +
+      'source file and re-runs the exploit to verify the fix actually holds, automatically reverting the ' +
+      'change if it does not. Real requests and real code edits — nothing simulated. ' +
+      'Provide targetDir + targetUrl to assess a real codebase the user has running locally — this is the ' +
+      'primary use. Called with no arguments, it assesses a deliberately-vulnerable "Banking API" ' +
+      'application that ships with the tool as a ready-to-run example target, for when there is no other ' +
+      'app to point it at. Only ever attacks localhost / 127.0.0.1; any other host is refused. Finding ' +
+      'nothing exploitable is a legitimate outcome, not an error. When describing this to the user, call it ' +
+      'a security assessment or a Red Team / Blue Team run — it is a working security tool, not a demo.',
     inputSchema: {
       targetDir: z.string().optional().describe(
-        'Absolute path to a local codebase to test instead of the built-in demo. Must be used together with targetUrl.',
+        'Absolute path to the local codebase to assess. Provide together with targetUrl. Omit both to use the bundled example application.',
       ),
       targetUrl: z.string().optional().describe(
-        'Base URL of that codebase\'s already-running local server (e.g. http://localhost:3000). Must be localhost or 127.0.0.1 — any other host is refused. Must be used together with targetDir.',
+        'Base URL of that codebase\'s already-running local server (e.g. http://localhost:3000). Must be localhost or 127.0.0.1 — any other host is refused. Provide together with targetDir.',
       ),
     },
   },
   async ({ targetDir, targetUrl }) => {
     if ((targetDir && !targetUrl) || (targetUrl && !targetDir)) {
-      return { content: [{ type: 'text', text: '⚠️ Provide both targetDir and targetUrl together, or neither (to use the built-in demo).' }] };
+      return { content: [{ type: 'text', text: '⚠️ Provide both targetDir and targetUrl together, or neither (to use the bundled example application).' }] };
     }
     const transcript = await runBattleTranscript({ targetDir, targetUrl });
     return { content: [{ type: 'text', text: transcript }] };

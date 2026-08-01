@@ -106,7 +106,7 @@ async function runSimulation() {
     score = 40;
     blue.resetToVulnerable();
     runId = await supa.startRun({ model: llm.model, initialScore: score });
-    record({ type: 'run_start', llm: llm.enabled, model: llm.model, app: 'Banking API Demo', persisted: supa.enabled });
+    record({ type: 'run_start', llm: llm.enabled, model: llm.model, app: 'Banking API (example target)', persisted: supa.enabled });
     record({ type: 'score', value: score, delta: 0, reason: '2 critical vulnerabilities present' });
     await sleep(BEAT);
 
