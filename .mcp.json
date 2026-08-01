@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "red-team-blue-team": {
+      "command": "node",
+      "args": ["--experimental-sqlite", "--no-warnings", "mcp/server.js"]
+    }
+  }
+}
